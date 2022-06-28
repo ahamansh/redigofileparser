@@ -1,47 +1,34 @@
 package workerpool
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/mytest/api/internal/constants"
 	filehandler "github.com/mytest/api/internal/fileshandler"
-	"github.com/mytest/api/swagger/model/v1/tasks"
+	"github.com/mytest/api/internal/rclient"
 )
 
+// To be used when starting the server
 type WorkerPoolInterface interface {
 	InitWorkers()
 	StartWorkers()
 }
 
 type RedisListWorkers struct {
-	rds                  *redis.Client
+	rds                  rclient.TaskDBI
 	CurrentActiveWorkers int
 	MaxWorkers           int
 	isShutdown           bool
 	fileParser           filehandler.FileHanderInterface
 }
 
-func GetRedisWorkerPool(rds *redis.Client) WorkerPoolInterface {
+func GetRedisWorkerPool(rdb rclient.TaskDBI) WorkerPoolInterface {
 	return &RedisListWorkers{
-		rds:        rds,
+		rds:        rdb,
 		MaxWorkers: 1,
 		fileParser: filehandler.GetLocalFileHandler(),
 	}
-}
-
-func (r *RedisListWorkers) parseTaskMessage(message []byte) (*tasks.TaskDetails, error) {
-	// json to struct
-	var parsedMessage tasks.TaskDetails
-	err := json.Unmarshal(message, &parsedMessage)
-	if err != nil {
-		return nil, err
-	}
-
-	return &parsedMessage, nil
 }
 
 // Implementation can change we can add a ticker or a worker pool based on channel
@@ -50,18 +37,15 @@ func (r *RedisListWorkers) listenAndServeList() {
 		if r.isShutdown {
 			break
 		}
-		myResult, err := r.rds.BLPop(context.Background(), 2*time.Second, constants.REDIS_IN_PROGRESS_QUEUE).Result()
-		if err != nil {
-			fmt.Println(err)
-		}
+		myTasks, found, err := r.rds.GetTaskToProcess()
 
-		if len(myResult) > 0 {
+		if found {
 
 			// Get the Task details
-			myTasks, err := r.parseTaskMessage([]byte(myResult[1]))
 			if err != nil {
 				myTasks.TaskStatus = constants.TASK_STATUS_INVALID
-				r.UpdateTaskStatus(myTasks)
+				r.rds.UpdateTaskStatus(myTasks)
+				r.rds.AddToDeadLetterQ(myTasks)
 				fmt.Println("Error for procesing the message, may be file is wrong, put to dead letter q")
 				continue
 			}
@@ -72,20 +56,20 @@ func (r *RedisListWorkers) listenAndServeList() {
 			ips, err := r.fileParser.ProcessFile(myTasks.FileID)
 			if err != nil {
 				myTasks.TaskStatus = constants.TASK_STATUS_INVALID
-				r.UpdateTaskStatus(myTasks)
+				r.rds.UpdateTaskStatus(myTasks)
+				r.rds.AddToDeadLetterQ(myTasks)
 				fmt.Println("Error for procesing the message, may be file is wrong, put to dead letter q")
 				continue
 			}
 
 			myTasks.TaskStatus = constants.TASK_STATUS_COMPELTED
 			myTasks.TaskResult = ips
-			r.UpdateTaskStatus(myTasks)
+			r.rds.UpdateTaskStatus(myTasks)
 			if err != nil {
 				fmt.Println("Error for procesing the message, may be file is wrong, put to dead letter q")
 				continue
 			}
 			r.AddToReverseIndexQ(myTasks.TaskResult, myTasks.FileID)
-
 			fmt.Println(myTasks, err)
 		}
 		time.Sleep(2 * time.Second)
@@ -96,51 +80,28 @@ func (r *RedisListWorkers) InitWorkers() {
 
 }
 
+// Implementation can change and needs to be updated. We can use either channels(we can pass the task as a func and workers should be able to execute them), for waitgroup for worker pool implementation.
+// Current implementation is just a single goroutine for the data.
 func (r *RedisListWorkers) StartWorkers() {
 	go r.listenAndServeList()
 }
 
-func (r *RedisListWorkers) AddToDeadLetterQ(thisTask *tasks.TaskDetails) {
-	newTaskDAta, _ := json.Marshal(thisTask)
-	_, err := r.rds.LPush(context.Background(), constants.REDIS_DEAD_LETTER_QUEUE, newTaskDAta).Result()
-	if err != nil {
-		return
-	}
-}
-
-func (r *RedisListWorkers) UpdateTaskStatus(thisTask *tasks.TaskDetails) error {
-	newTaskDAta, _ := json.Marshal(thisTask)
-	err := r.rds.Set(context.Background(), thisTask.TaskID, newTaskDAta, 0).Err()
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 func (r *RedisListWorkers) AddToReverseIndexQ(ips []string, fileName string) {
 
-	// Check for the retry if the entry is simultaneously updated
-
+	// Retry can be implemented
 	for _, ip := range ips {
 
-		val, err := r.rds.Get(context.Background(), ip).Result()
-		if err != redis.Nil {
-			thisData := tasks.ReverseLookup{
+		val, found, _ := r.rds.LookupIPDetails(ip)
+		if !found {
+			thisData := rclient.ReverseLookup{
 				IP:        ip,
 				FileNames: []string{fileName},
 			}
-			newTaskDAta, _ := json.Marshal(thisData)
-
-			r.rds.Set(context.Background(), ip, newTaskDAta, 0).Err()
+			r.rds.UpdateIPLookup(ip, &thisData)
+			continue
 		}
 
-		var parsedMessage tasks.ReverseLookup
-		err = json.Unmarshal([]byte(val), &parsedMessage)
-		parsedMessage.FileNames = append(parsedMessage.FileNames, fileName)
-		newTaskDAta, _ := json.Marshal(parsedMessage)
-		r.rds.Set(context.Background(), ip, newTaskDAta, 0).Err()
+		val.FileNames = append(val.FileNames, fileName)
+		r.rds.UpdateIPLookup(ip, val)
 	}
-
 }
-
-// file laoder

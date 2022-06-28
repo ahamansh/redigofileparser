@@ -42,6 +42,7 @@ func (handlerFunc HandlerFunctions) AddTask(w http.ResponseWriter, r *http.Reque
 
 	taskID, err := handlerFunc.taskModel.CreateNewTask(currRequest.FileID)
 	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -56,10 +57,15 @@ func (handlerFunc HandlerFunctions) SearchTasks(w http.ResponseWriter, r *http.R
 	params := mux.Vars(r)
 	taskID := params["taskId"]
 	currentTaskDetails, err := handlerFunc.taskModel.GetTaskDetails(taskID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(err.Error()))
+	}
 	jsonResponse, err := json.Marshal(currentTaskDetails)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte(err.Error()))
 	}
 
@@ -73,13 +79,17 @@ func (handlerFunc HandlerFunctions) SearchFilesByIP(w http.ResponseWriter, r *ht
 
 	taskIP := r.URL.Query().Get("ip")
 	currentTaskDetails, err := handlerFunc.taskModel.GetReverseLookup(taskIP)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(err.Error()))
+	}
 	jsonResponse, err := json.Marshal(currentTaskDetails)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
 	}
-
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write(jsonResponse)

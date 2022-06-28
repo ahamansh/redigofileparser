@@ -1,87 +1,57 @@
 package tasks
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
-	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/mytest/api/internal/constants"
+	"github.com/mytest/api/internal/rclient"
 )
 
 type TaskRepository interface {
 	CreateNewTask(fileID string) (string, error)
-	GetTaskDetails(taskID string) (*TaskDetails, error)
-	GetReverseLookup(IP string) (*ReverseLookup, error)
-}
-
-type ReverseLookup struct {
-	IP        string   `json:"ip"`
-	FileNames []string `json:"files"`
-}
-
-type TaskDetails struct {
-	TaskID           string   `json:"taskID"`
-	TaskCreationDate int64    `json:"taskCreationDate"`
-	FileID           string   `json:"fileID"`
-	TaskStatus       string   `json:"taskStatus"`
-	TaskResult       []string `json:"taskResult"`
+	GetTaskDetails(taskID string) (*rclient.TaskDetails, error)
+	GetReverseLookup(IP string) (*rclient.ReverseLookup, error)
 }
 
 type TaskRepo struct {
-	rds         *redis.Client
-	taskDetails TaskDetails
+	rds         rclient.TaskDBI
+	taskDetails rclient.TaskDetails
 }
 
-func CreateRepository(rds *redis.Client) TaskRepository {
+func CreateRepository(rds rclient.TaskDBI) TaskRepository {
 	return &TaskRepo{rds: rds}
 }
 
 func (t *TaskRepo) CreateNewTask(fileID string) (taskID string, err error) {
-
-	// check if this task already exists
-
-	newTask := TaskDetails{
+	// check if this task already exists. This validation is valid only if the file is not updated all the time
+	newTask := rclient.TaskDetails{
 		TaskID:           uuid.New().String(),
 		TaskCreationDate: time.Now().UnixNano(),
 		FileID:           fileID,
 		TaskStatus:       constants.TASK_STATUS_INPROGRESS,
 	}
 
-	newTaskDAta, _ := json.Marshal(newTask)
-	err = t.rds.Set(context.Background(), newTask.TaskID, newTaskDAta, 0).Err()
-	_, err = t.rds.LPush(context.Background(), constants.REDIS_IN_PROGRESS_QUEUE, newTaskDAta).Result()
-	if err != nil {
-		return "", errors.New("Unable to persist the task")
-	}
-
+	t.rds.UpdateTaskStatus(&newTask)
+	t.rds.AddTaskToQueue(&newTask)
 	return newTask.TaskID, nil
 }
 
-func (t *TaskRepo) GetTaskDetails(taskID string) (*TaskDetails, error) {
-
-	val, err := t.rds.Get(context.Background(), taskID).Result()
-	if err == redis.Nil {
+func (t *TaskRepo) GetTaskDetails(taskID string) (*rclient.TaskDetails, error) {
+	val, found, err := t.rds.GetTaskDetails(taskID)
+	if !found {
 		return nil, errors.New("key with taskID not found")
 	}
-	//fmt.Println("For key taskID, Value is ", val)
-
-	var parsedMessage TaskDetails
-	err = json.Unmarshal([]byte(val), &parsedMessage)
-	return &parsedMessage, err
+	return val, err
 }
 
-func (t *TaskRepo) GetReverseLookup(IP string) (*ReverseLookup, error) {
+func (t *TaskRepo) GetReverseLookup(IP string) (*rclient.ReverseLookup, error) {
 
-	val, err := t.rds.Get(context.Background(), IP).Result()
-	if err == redis.Nil {
-		return nil, errors.New("key with taskID not found")
+	val, found, err := t.rds.LookupIPDetails(IP)
+	if !found {
+		return nil, errors.New("key with IP not found")
 	}
-	//fmt.Println("For key taskID, Value is ", val)
+	return val, err
 
-	var parsedMessage ReverseLookup
-	err = json.Unmarshal([]byte(val), &parsedMessage)
-	return &parsedMessage, err
 }
