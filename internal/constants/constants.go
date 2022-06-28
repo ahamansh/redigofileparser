@@ -1,0 +1,13 @@
+package constants
+
+const FILE_DIR_FOR = ""
+const REDIS_IN_PROGRESS_QUEUE = "INPROGRESSLIST"
+const REDIS_DEAD_LETTER_QUEUE = "DEADLETTERLIST"
+const REDIS_REVERSE_INDEX_QUEUE = "DEADLETTERLIST"
+
+// FULLY QUALIFIED NAME OF THE FOLDER HAVING THE PARSING FILES
+const DEFAULT_LOCAL_FILE_FOLDER = "/Users/anshulsh/practice/crowdstrike/Archive/input/"
+
+const TASK_STATUS_INVALID = "error"
+const TASK_STATUS_COMPELTED = "completed"
+const TASK_STATUS_INPROGRESS = "in-progress"
